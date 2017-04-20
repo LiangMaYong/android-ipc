@@ -7,7 +7,7 @@ import android.content.ServiceConnection;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
-import android.os.Message;
+import android.os.Looper;
 import android.os.RemoteException;
 import android.util.Log;
 
@@ -22,7 +22,6 @@ import java.util.Map;
 public class IpcConnection {
 
     private final String TAG = IpcConnection.class.getSimpleName();
-    private final int WHAT_RESULT = 0;
     private final int WHAT_REQUEST_CONNECTED = 1;
     private final int WHAT_REQUEST_DISCONNECT = 2;
     // listeners
@@ -39,43 +38,21 @@ public class IpcConnection {
     private final Class<? extends IpcService> serviceClass;
     // isConnecting
     private boolean isConnecting = false;
-    //
-    // handler
-    private Handler handler = new Handler() {
-        @Override
-        public void handleMessage(Message msg) {
-            super.handleMessage(msg);
-            if (msg.what == WHAT_RESULT) {
-                if (msg.obj instanceof IpcResult) {
-                    ((IpcResult) msg.obj).onCallback();
-                }
-            } else if (msg.what == WHAT_REQUEST_CONNECTED) {
-                for (int i = 0; i < waitRequests.size(); i++) {
-                    IpcRequest request = waitRequests.get(i);
-                    postRequest(request.extras, request.listener);
-                }
-                waitRequests.clear();
-            } else if (msg.what == WHAT_REQUEST_DISCONNECT) {
-                for (int i = 0; i < waitRequests.size(); i++) {
-                    waitRequests.get(i).listener.onFailure(new IpcExcption(IpcExcption.SERVICE_DISCONNECT, "Connect Service Error"));
-                }
-                waitRequests.clear();
-            }
-        }
-    };
+    // mainHandler
+    private Handler mainHandler = new Handler(Looper.getMainLooper());
 
     // defualtListener
     private Listener defualtListener = new Listener() {
         @Override
         public void onConnected(IpcConnection messageConnection) {
             Log.d(TAG, "onConnected:" + serviceClass.getName());
-            handler.obtainMessage(WHAT_REQUEST_CONNECTED).sendToTarget();
+            mainHandler.post(new RequestRun(WHAT_REQUEST_CONNECTED));
         }
 
         @Override
         public void onDisconnected() {
             Log.d(TAG, "onDisconnected:" + serviceClass.getName());
-            handler.obtainMessage(WHAT_REQUEST_DISCONNECT).sendToTarget();
+            mainHandler.post(new RequestRun(WHAT_REQUEST_DISCONNECT));
         }
     };
 
@@ -104,7 +81,7 @@ public class IpcConnection {
      * postRequest
      *
      * @param bundle   bundle
-     * @param listener messageActionListener
+     * @param listener listener
      */
     public void postRequest(Bundle bundle, OnIpcListener listener) {
         if (isConnected()) {
@@ -197,10 +174,9 @@ public class IpcConnection {
         if (listeners.containsKey(requestCode)) {
             WeakReference<OnIpcListener> listenerReference = listeners.get(requestCode);
             if (listenerReference.get() != null) {
-                handler.obtainMessage(WHAT_RESULT, new IpcResult(extras, listenerReference.get(), null, true)).sendToTarget();
-            } else {
-                listeners.remove(requestCode);
+                mainHandler.post(new ResultRun(new IpcResult(extras, listenerReference.get(), null, true)));
             }
+            listeners.remove(requestCode);
         }
     }
 
@@ -214,13 +190,51 @@ public class IpcConnection {
         if (listeners.containsKey(requestCode)) {
             WeakReference<OnIpcListener> listenerReference = listeners.get(requestCode);
             if (listenerReference.get() != null) {
-                handler.obtainMessage(WHAT_RESULT, new IpcResult(null, listenerReference.get(), excption, false)).sendToTarget();
-            } else {
-                listeners.remove(requestCode);
+                mainHandler.post(new ResultRun(new IpcResult(null, listenerReference.get(), excption, false)));
+            }
+            listeners.remove(requestCode);
+        }
+    }
+
+    private class ResultRun implements Runnable {
+
+        private IpcResult result;
+
+        public ResultRun(IpcResult result) {
+            this.result = result;
+        }
+
+        @Override
+        public void run() {
+            if (result != null) {
+                result.onCallback();
             }
         }
     }
 
+    private class RequestRun implements Runnable {
+
+        private int what;
+
+        public RequestRun(int what) {
+            this.what = what;
+        }
+
+        @Override
+        public void run() {
+            if (what == WHAT_REQUEST_CONNECTED) {
+                for (int i = 0; i < waitRequests.size(); i++) {
+                    IpcRequest request = waitRequests.get(i);
+                    postRequest(request.extras, request.listener);
+                }
+            } else if (what == WHAT_REQUEST_DISCONNECT) {
+                for (int i = 0; i < waitRequests.size(); i++) {
+                    waitRequests.get(i).listener.onFailure(new IpcExcption(IpcExcption.SERVICE_DISCONNECT, "Connect Service Error"));
+                }
+            }
+            waitRequests.clear();
+        }
+    }
 
     //////////////////////////////////////////////////////////////////////////////
     //////// Class
